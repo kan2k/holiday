@@ -65,7 +65,7 @@ app.get('/api/agents', async (req, res) => {
  */
 app.post('/api/agents', async (req, res) => {
   try {
-    const { name, persona, leverage, pairs, tradingPairs: pairsFromBody, loopInterval } = req.body;
+    const { name, persona, leverage, pairs, tradingPairs: pairsFromBody, loopInterval, decisionModel } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Agent name is required' });
@@ -117,7 +117,7 @@ app.post('/api/agents', async (req, res) => {
       executionMode: 'paper',
       models: {
         research: 'perplexity/sonar-deep-research',
-        decision: 'moonshotai/kimi-k2.5'
+        decision: decisionModel || 'moonshotai/kimi-k2.5'
       }
     };
 
@@ -386,6 +386,152 @@ app.get('/api/summary/:id', async (req, res) => {
     res.json({ summary: content });
   } catch {
     res.json({ summary: null });
+  }
+});
+
+/**
+ * POST /api/backtests/run - Run a backtest via SSE (Server-Sent Events)
+ */
+app.get('/api/backtests/run', async (req, res) => {
+  const { agent, from, to, balance, model } = req.query;
+  if (!agent) return res.status(400).json({ error: 'agent is required' });
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+  });
+
+  const send = (type, data) => {
+    res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+  };
+
+  const { spawn } = await import('child_process');
+  const args = [
+    'scripts/backtest.js',
+    '--agent', agent,
+    '--from', from || '2026-02-10',
+    '--to', to || '2026-03-10',
+    '--balance', balance || '1000',
+    '--yes'
+  ];
+  if (model) args.push('--model', model);
+
+  send('status', { message: 'Starting backtest...', phase: 'init' });
+
+  const child = spawn('node', args, { cwd: ROOT, env: process.env });
+  let stdoutBuffer = '';
+
+  child.stderr.on('data', (chunk) => {
+    const text = chunk.toString();
+    const lines = text.split('\n').filter(l => l.trim());
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+
+      if (trimmed.startsWith('[Decision:') && trimmed.includes('Starting')) {
+        send('action', { action: 'decision_start', message: trimmed, phase: 'decision' });
+      } else if (trimmed.startsWith('[Decision:') && trimmed.includes('Tool:')) {
+        const toolMatch = trimmed.match(/Tool: (\w+)\(/);
+        send('action', { action: 'tool_call', tool: toolMatch?.[1] || 'unknown', message: trimmed, phase: 'decision' });
+      } else if (trimmed.startsWith('[Decision:') && trimmed.includes('Done in')) {
+        send('action', { action: 'decision_done', message: trimmed, phase: 'decision' });
+      } else if (trimmed.startsWith('[Review:') && trimmed.includes('Reviewing')) {
+        send('action', { action: 'review_start', message: trimmed, phase: 'review' });
+      } else if (trimmed.startsWith('[Review:') && trimmed.includes('Done in')) {
+        send('action', { action: 'review_done', message: trimmed, phase: 'review' });
+      } else if (trimmed.startsWith('[Review]') && (trimmed.includes('APPROVED') || trimmed.includes('REJECTED'))) {
+        send('action', { action: 'review_result', message: trimmed, phase: 'review' });
+      } else if (trimmed.match(/→ (LONG|SHORT|CLOSE|HOLD)/)) {
+        send('trade', { message: trimmed, phase: 'trade' });
+      } else if (trimmed.match(/\[2026-/)) {
+        const dayMatch = trimmed.match(/\[([\d-]+)\] Day (\d+)\/(\d+) \| Balance: \$([.\d]+)/);
+        if (dayMatch) {
+          send('day', {
+            date: dayMatch[1], dayNum: parseInt(dayMatch[2]),
+            totalDays: parseInt(dayMatch[3]), balance: parseFloat(dayMatch[4]),
+            phase: 'simulate'
+          });
+        }
+      } else if (trimmed.includes('Fetching historical candles')) {
+        send('status', { message: 'Fetching historical candles...', phase: 'candles' });
+      } else if (trimmed.includes('daily candles loaded')) {
+        send('status', { message: trimmed, phase: 'candles' });
+      } else if (trimmed.includes('LIQUIDATED')) {
+        send('trade', { message: trimmed, phase: 'liquidation' });
+      }
+    }
+  });
+
+  child.stdout.on('data', (chunk) => {
+    stdoutBuffer += chunk.toString();
+  });
+
+  child.on('close', (code) => {
+    try {
+      const result = JSON.parse(stdoutBuffer);
+      send('complete', { result, exitCode: code });
+    } catch {
+      send('complete', { exitCode: code, error: 'Failed to parse results' });
+    }
+    res.end();
+  });
+
+  child.on('error', (err) => {
+    send('error', { message: err.message });
+    res.end();
+  });
+
+  req.on('close', () => {
+    child.kill();
+  });
+});
+
+/**
+ * GET /api/backtests - List all backtest results
+ */
+app.get('/api/backtests', async (req, res) => {
+  try {
+    const backtestDir = path.join(ROOT, 'memory', 'backtests');
+    await fs.mkdir(backtestDir, { recursive: true });
+    const files = await fs.readdir(backtestDir);
+    const jsonFiles = files.filter(f => f.endsWith('.json')).sort().reverse();
+
+    const results = [];
+    for (const file of jsonFiles) {
+      try {
+        const content = await fs.readFile(path.join(backtestDir, file), 'utf-8');
+        const data = JSON.parse(content);
+        results.push({ file, ...data });
+      } catch { /* skip malformed */ }
+    }
+    res.json(results);
+  } catch (e) {
+    res.json([]);
+  }
+});
+
+/**
+ * GET /api/backtests/:file - Get a single backtest result
+ */
+app.get('/api/backtests/:file', async (req, res) => {
+  try {
+    const filepath = path.join(ROOT, 'memory', 'backtests', req.params.file);
+    const content = await fs.readFile(filepath, 'utf-8');
+    const data = JSON.parse(content);
+
+    // Augment with agent pairs from config
+    if (data.config?.agentId) {
+      try {
+        const agentConfigPath = path.join(ROOT, 'config', 'agents', `${data.config.agentId}.json`);
+        const agentConfig = JSON.parse(await fs.readFile(agentConfigPath, 'utf-8'));
+        data.agentPairs = (agentConfig.tradingPairs || []).map(p => p.symbol);
+      } catch { /* agent config may not exist */ }
+    }
+
+    res.json(data);
+  } catch (e) {
+    res.status(404).json({ error: 'Backtest not found' });
   }
 });
 

@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import AgentSidebar from './components/AgentSidebar';
 import ChartPanel from './components/ChartPanel';
 import DecisionFeed from './components/DecisionFeed';
+import BacktestPanel from './components/BacktestPanel';
 import StatusBar from './components/StatusBar';
 import ResizeHandle from './components/ResizeHandle';
 import CreateAgentDialog from './components/CreateAgentDialog';
@@ -19,7 +20,11 @@ export default function App() {
   const [ready, setReady] = useState(false);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
 
-  // Resizable column widths
+  const [sidebarTab, setSidebarTab] = useState('agents');
+  const [backtests, setBacktests] = useState([]);
+  const [selectedBacktest, setSelectedBacktest] = useState(null);
+  const [backtestData, setBacktestData] = useState(null);
+
   const [leftWidth, setLeftWidth] = useState(240);
   const [rightWidth, setRightWidth] = useState(340);
 
@@ -31,7 +36,6 @@ export default function App() {
     setRightWidth(prev => Math.max(260, Math.min(500, prev - delta)));
   }, []);
 
-  // Fetch agents
   const fetchAgents = useCallback(() => {
     fetch('/api/agents')
       .then(r => r.json())
@@ -47,7 +51,6 @@ export default function App() {
 
   useEffect(() => { fetchAgents(); }, []);
 
-  // Fetch research reports
   useEffect(() => {
     fetch('/api/research')
       .then(r => r.json())
@@ -55,7 +58,23 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  // Fetch decisions when agent changes
+  // Fetch backtests
+  useEffect(() => {
+    fetch('/api/backtests')
+      .then(r => r.json())
+      .then(data => { if (Array.isArray(data)) setBacktests(data); })
+      .catch(() => {});
+  }, []);
+
+  // Load selected backtest data
+  useEffect(() => {
+    if (!selectedBacktest) { setBacktestData(null); return; }
+    fetch(`/api/backtests/${selectedBacktest}`)
+      .then(r => r.json())
+      .then(data => setBacktestData(data))
+      .catch(() => setBacktestData(null));
+  }, [selectedBacktest]);
+
   useEffect(() => {
     if (!selectedAgent) return;
     setDecisions([]);
@@ -75,7 +94,6 @@ export default function App() {
     }).catch(() => setLoadingDecisions(false));
   }, [selectedAgent]);
 
-  // Load more decisions
   const loadMore = useCallback(() => {
     if (!selectedAgent || loadingDecisions || offset >= totalDecisions) return;
     setLoadingDecisions(true);
@@ -90,25 +108,28 @@ export default function App() {
   }, [selectedAgent, offset, totalDecisions, loadingDecisions]);
 
   const selectedAgentData = agents.find(a => a.id === selectedAgent);
+  const isBacktestView = sidebarTab === 'backtests' && selectedBacktest && backtestData;
 
   return (
     <div className="h-screen flex flex-col bg-terminal-bg overflow-hidden">
-      {/* Scan line effect */}
       <div className="pointer-events-none fixed inset-0 z-50 opacity-[0.015]"
         style={{
           background: 'repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,212,170,0.08) 2px, rgba(0,212,170,0.08) 4px)'
         }}
       />
 
-      {/* Top bar */}
-      <StatusBar agentCount={agents.length} selectedAgent={selectedAgentData} />
+      <StatusBar
+        agentCount={agents.length}
+        selectedAgent={isBacktestView ? null : selectedAgentData}
+        backtestMode={isBacktestView}
+        backtestAgent={isBacktestView ? backtestData?.config?.agentId : null}
+      />
 
-      {/* Main layout */}
       <div className="flex-1 flex overflow-hidden">
         <AnimatePresence mode="wait">
           {ready && (
             <>
-              {/* Left column - Agents */}
+              {/* Left column - Agents/Backtests */}
               <motion.div
                 initial={{ x: -80, opacity: 0 }}
                 animate={{ x: 0, opacity: 1 }}
@@ -119,15 +140,19 @@ export default function App() {
                 <AgentSidebar
                   agents={agents}
                   selected={selectedAgent}
-                  onSelect={setSelectedAgent}
+                  onSelect={(id) => { setSelectedAgent(id); setSidebarTab('agents'); }}
                   onAddAgent={() => setShowCreateDialog(true)}
+                  backtests={backtests}
+                  selectedBacktest={selectedBacktest}
+                  onSelectBacktest={setSelectedBacktest}
+                  activeTab={sidebarTab}
+                  onTabChange={setSidebarTab}
                 />
               </motion.div>
 
-              {/* Left resize handle */}
               <ResizeHandle onResize={handleLeftResize} />
 
-              {/* Center - Charts */}
+              {/* Center */}
               <motion.div
                 initial={{ y: 30, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
@@ -135,16 +160,46 @@ export default function App() {
                 className="flex-1 min-w-[300px] overflow-hidden"
               >
                 <ChartPanel
-                  agent={selectedAgentData}
-                  decisions={allDecisions}
+                  agent={isBacktestView
+                    ? {
+                        id: backtestData.config?.agentId,
+                        pairs: backtestData.agentPairs || [...new Set((backtestData.trades || []).map(t => t.symbol))],
+                        leverage: backtestData.leverage
+                      }
+                    : selectedAgentData}
+                  decisions={isBacktestView
+                    ? (backtestData.trades || []).flatMap(t => {
+                        const markers = [];
+                        const entryTs = new Date(t.day + 'T12:00:00Z').getTime() / 1000;
+                        markers.push({
+                          timestamp: entryTs,
+                          action: t.action,
+                          symbol: t.symbol,
+                          size: null,
+                          reason: `Entry @ $${t.entryPrice?.toFixed(2)}`,
+                        });
+                        if (t.exitDay && t.exitPrice) {
+                          const exitTs = new Date(t.exitDay + 'T12:00:00Z').getTime() / 1000;
+                          markers.push({
+                            timestamp: exitTs,
+                            action: 'CLOSE',
+                            symbol: t.symbol,
+                            size: null,
+                            reason: `Exit @ $${t.exitPrice?.toFixed(2)} | PnL: $${t.pnl?.toFixed(2)} (${t.reason})`,
+                          });
+                        }
+                        return markers;
+                      })
+                    : allDecisions}
                   research={research}
+                  backtestTrades={isBacktestView ? backtestData.trades : null}
+                  backtestEquity={isBacktestView ? backtestData.equityHistory : null}
                 />
               </motion.div>
 
-              {/* Right resize handle */}
               <ResizeHandle onResize={handleRightResize} />
 
-              {/* Right column - Decisions */}
+              {/* Right column */}
               <motion.div
                 initial={{ x: 80, opacity: 0 }}
                 animate={{ x: 0, opacity: 1 }}
@@ -152,26 +207,32 @@ export default function App() {
                 className="flex-shrink-0 border-l border-terminal-border"
                 style={{ width: rightWidth }}
               >
-                <DecisionFeed
-                  decisions={decisions}
-                  total={totalDecisions}
-                  loading={loadingDecisions}
-                  onLoadMore={loadMore}
-                  hasMore={offset < totalDecisions}
-                />
+                {isBacktestView ? (
+                  <BacktestPanel backtest={backtestData} />
+                ) : (
+                  <DecisionFeed
+                    decisions={decisions}
+                    total={totalDecisions}
+                    loading={loadingDecisions}
+                    onLoadMore={loadMore}
+                    hasMore={offset < totalDecisions}
+                  />
+                )}
               </motion.div>
             </>
           )}
         </AnimatePresence>
       </div>
 
-      {/* Create Agent Dialog */}
       <CreateAgentDialog
         open={showCreateDialog}
-        onClose={() => setShowCreateDialog(false)}
-        onCreated={() => {
-          fetchAgents();
+        onClose={() => {
+          setShowCreateDialog(false);
+          fetch('/api/backtests').then(r => r.json()).then(data => {
+            if (Array.isArray(data)) setBacktests(data);
+          }).catch(() => {});
         }}
+        onCreated={() => { fetchAgents(); }}
       />
     </div>
   );

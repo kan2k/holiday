@@ -1,4 +1,5 @@
 import { ethers } from 'ethers';
+import { signL1Action } from '@nktkas/hyperliquid/signing';
 
 const HYPERLIQUID_API = 'https://api.hyperliquid.xyz';
 const HYPERLIQUID_INFO_API = `${HYPERLIQUID_API}/info`;
@@ -354,30 +355,31 @@ export class HyperliquidClient {
       }
     }
     
-    const timestamp = Date.now();
+    const nonce = Date.now();
+    const formattedPrice = this._formatNumber(price);
+    const formattedSize = this._formatNumber(size);
+
     const action = {
       type: 'order',
       orders: [{
         a: assetIndex,
         b: side === 'buy',
-        p: price.toString(),
-        s: size.toString(),
+        p: formattedPrice,
+        s: formattedSize,
         r: reduceOnly,
-        t: orderType === 'limit' ? { limit: { tif: 'Gtc' } } : { trigger: { triggerPx: price.toString(), isMarket: true, tpsl: 'tp' } }
+        t: orderType === 'limit'
+          ? { limit: { tif: 'Gtc' } }
+          : { trigger: { triggerPx: formattedPrice, isMarket: true, tpsl: 'tp' } }
       }],
       grouping: 'na'
     };
     
-    const signature = await this._signAction(action, timestamp);
+    const signature = await this._signAction(action, nonce);
     
     const response = await fetch(HYPERLIQUID_EXCHANGE_API, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action,
-        nonce: timestamp,
-        signature
-      })
+      body: JSON.stringify({ action, nonce, signature })
     });
     
     if (!response.ok) {
@@ -401,22 +403,18 @@ export class HyperliquidClient {
       m => m.name.toUpperCase() === symbol.toUpperCase()
     );
     
-    const timestamp = Date.now();
+    const nonce = Date.now();
     const action = {
       type: 'cancel',
       cancels: [{ a: assetIndex, o: orderId }]
     };
     
-    const signature = await this._signAction(action, timestamp);
+    const signature = await this._signAction(action, nonce);
     
     const response = await fetch(HYPERLIQUID_EXCHANGE_API, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action,
-        nonce: timestamp,
-        signature
-      })
+      body: JSON.stringify({ action, nonce, signature })
     });
     
     if (!response.ok) {
@@ -428,34 +426,22 @@ export class HyperliquidClient {
   }
 
   /**
-   * Sign an action for the exchange API
+   * Sign an L1 action using the @nktkas/hyperliquid SDK.
+   * Handles EIP-712 phantom agent construction, msgpack serialization,
+   * and keccak256 hashing per Hyperliquid's spec.
    */
-  async _signAction(action, timestamp) {
-    // Hyperliquid uses EIP-712 typed data signing
-    const domain = {
-      name: 'Exchange',
-      version: '1',
-      chainId: 42161, // Arbitrum
-      verifyingContract: '0x0000000000000000000000000000000000000000'
-    };
-    
-    const types = {
-      Agent: [
-        { name: 'source', type: 'string' },
-        { name: 'connectionId', type: 'bytes32' }
-      ]
-    };
-    
-    // Simplified signing - actual implementation needs full EIP-712
-    const message = JSON.stringify({ action, nonce: timestamp });
-    const messageHash = ethers.hashMessage(message);
-    const signature = await this.wallet.signMessage(ethers.getBytes(messageHash));
-    
-    return {
-      r: signature.slice(0, 66),
-      s: '0x' + signature.slice(66, 130),
-      v: parseInt(signature.slice(130, 132), 16)
-    };
+  async _signAction(action, nonce) {
+    return await signL1Action({ wallet: this.wallet, action, nonce });
+  }
+
+  /**
+   * Strip trailing zeros from a numeric string.
+   * Hyperliquid rejects signatures when price/size contain trailing zeros.
+   */
+  _formatNumber(n) {
+    const s = typeof n === 'string' ? n : String(n);
+    if (!s.includes('.')) return s;
+    return s.replace(/\.?0+$/, '');
   }
 
   /**

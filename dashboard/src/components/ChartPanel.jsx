@@ -489,7 +489,7 @@ function SingleChart({ symbol, decisions, research, interval = '1h', days = 30, 
   );
 }
 
-export default function ChartPanel({ agent, decisions, research }) {
+export default function ChartPanel({ agent, decisions, research, backtestTrades, backtestEquity }) {
   const [showHold, setShowHold] = useState(false);
   const [interval, setInterval] = useState('1h');
   const [range, setRange] = useState('3M');

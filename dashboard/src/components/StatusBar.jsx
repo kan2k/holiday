@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 
-export default function StatusBar({ agentCount, selectedAgent }) {
+export default function StatusBar({ agentCount, selectedAgent, backtestMode, backtestAgent }) {
   const [time, setTime] = useState(new Date());
 
   useEffect(() => {
@@ -24,7 +24,15 @@ export default function StatusBar({ agentCount, selectedAgent }) {
       <div className="flex-1" />
 
       <div className="flex items-center gap-4 text-terminal-text-dim">
-        {selectedAgent && (
+        {backtestMode ? (
+          <span>
+            <span className="text-terminal-text-dim">AGENT:</span>{' '}
+            <span className="text-terminal-accent">{backtestAgent?.toUpperCase()}</span>
+            <span className="text-terminal-text-dim ml-2">│</span>
+            <span className="ml-2">MODE:</span>{' '}
+            <span className="text-terminal-amber">BACKTEST</span>
+          </span>
+        ) : selectedAgent && (
           <span>
             <span className="text-terminal-text-dim">AGENT:</span>{' '}
             <span className="text-terminal-accent">{selectedAgent.id?.toUpperCase()}</span>

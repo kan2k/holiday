@@ -87,6 +87,20 @@ node scripts/research-daemon.js --once              # Single run
 node scripts/research-daemon.js --query "Gold macro" # Custom query
 ```
 
+### Backtesting
+
+Replay the full Decision + Review pipeline against historical data.
+
+```bash
+# Step 1: Backfill research for the date range
+node scripts/backfill-research.js --from 2026-01-30 --to 2026-02-06
+
+# Step 2: Run the backtest
+node scripts/backtest.js --agent contrarian-trader --from 2026-01-30 --to 2026-02-06
+```
+
+Backtest results (PnL, trades, equity curve) are saved to `memory/backtests/` and viewable in the dashboard under the **Backtests** tab.
+
 ### Running Multiple Agents
 
 Run the research daemon once, then start each agent with `--no-research` to avoid duplicate reports:
@@ -124,6 +138,8 @@ npm run build     # Build for production
 npm start         # Production server only
 ```
 
+The dashboard includes a presentation demo at [`/demo`](http://localhost:5173/demo) — a 12-slide interactive walkthrough of the system's architecture, safety mechanisms, and backtest results.
+
 ## Architecture
 
 ```
@@ -137,6 +153,8 @@ Holiday/
 ├── exchanges/
 │   └── hyperliquid.js        # Hyperliquid client (perp, spot, HIP-3)
 ├── scripts/
+│   ├── backtest.js           # Historical backtesting engine
+│   ├── backfill-research.js  # Backfill research for a date range
 │   ├── research-daemon.js    # Standalone continuous research process
 │   ├── run-research.js       # One-off research runner
 │   ├── create-agent.js       # CLI agent creator
@@ -144,10 +162,11 @@ Holiday/
 ├── config/agents/            # Agent configuration files
 ├── memory/
 │   ├── decisions/            # All agent decisions (markdown)
-│   └── research/             # Shared research reports (markdown)
+│   ├── research/             # Shared research reports (markdown)
+│   └── backtests/            # Backtest results and decision logs
 ├── dashboard/
 │   ├── server.js             # Express API (agents, candles, decisions, research)
-│   └── src/                  # React + Vite frontend
+│   └── src/                  # React + Vite frontend (+ /demo presentation)
 └── .env                      # OpenRouter API key
 ```
 
@@ -195,7 +214,8 @@ Example config (`config/agents/my-trader.example.json`):
   "executionMode": "paper",
   "models": {
     "research": "perplexity/sonar-deep-research",
-    "decision": "moonshotai/kimi-k2.5"
+    "decision": "moonshotai/kimi-k2.5",
+    "review": "moonshotai/kimi-k2.5"
   }
 }
 ```
