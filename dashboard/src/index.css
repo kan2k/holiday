@@ -1,0 +1,48 @@
+@import "tailwindcss";
+
+@theme {
+  --color-terminal-bg: #04070d;
+  --color-terminal-surface: #080c14;
+  --color-terminal-card: #0b0f18;
+  --color-terminal-border: #111a28;
+  --color-terminal-border-light: #1a2840;
+  --color-terminal-text: #c8d6e5;
+  --color-terminal-text-dim: #4a5a6a;
+  --color-terminal-accent: #00d4aa;
+  --color-terminal-accent-dim: #00d4aa33;
+  --color-terminal-long: #00c853;
+  --color-terminal-short: #ff1744;
+  --color-terminal-hold: #ff9800;
+  --color-terminal-amber: #ffab00;
+  --font-mono: 'JetBrains Mono', monospace;
+  --font-sans: 'Inter', sans-serif;
+}
+
+body {
+  margin: 0;
+  background: var(--color-terminal-bg);
+  color: var(--color-terminal-text);
+  font-family: var(--font-sans);
+  overflow: hidden;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-terminal-border);
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-terminal-border-light);
+}
+
+/* Ticker tape animation */
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}

@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# Agent configs (contain wallet keys) — example only
+config/agents/*
+!config/agents/my-trader.example.json
+
+# Memory (decisions, research, summaries — too big for repo)
+memory/*
+!memory/decisions/
+!memory/research/
+memory/decisions/*
+memory/research/*
+!memory/**/.gitkeep
+
+# Agent runtime data
+agents/*
+!agents/.gitkeep
+
+# Generated prompts (auto-created per agent, regenerated on start)
+prompts/*-AGENT.md
+
+# Standalone HTML visualizations
+*.html
+!dashboard/index.html
+
+# Build output
+dashboard/dist/
+
+# Vite
+dashboard/.vite/
+
+# IDE / OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+*.log
+
+# Lock files (optional — remove these lines if you want to commit them)
+# package-lock.json
+# dashboard/package-lock.json

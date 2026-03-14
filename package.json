@@ -1,0 +1,27 @@
+{
+  "name": "holiday",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Go on holiday while your AI trading agent works 24/7. Autonomous trading loop that never sleeps, so you can.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "start:agent": "node index.js --agent",
+    "create-agent": "node scripts/create-agent.js",
+    "research": "node scripts/run-research.js",
+    "research:daemon": "node scripts/research-daemon.js",
+    "validate": "node scripts/validate-config.js",
+    "visualize": "node scripts/visualize-decisions.js",
+    "test": "node --test"
+  },
+  "author": "jason kwok, hku",
+  "license": "MIT",
+  "dependencies": {
+    "@ai-sdk/openai": "^1.0.0",
+    "ai": "^4.0.0",
+    "ethers": "^6.0.0",
+    "dotenv": "^16.0.0",
+    "node-cron": "^3.0.0",
+    "zod": "^3.0.0"
+  }
+}

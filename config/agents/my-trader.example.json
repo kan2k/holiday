@@ -1,0 +1,25 @@
+{
+  "agentId": "my-trader",
+  "loopInterval": 3600000,
+  "persona": "You are OpenPerp, an perp trading agent. You trade fast you react faster. Your edge is momentum, breakout setups, and short term volatility. You avoid illiquid bets and over-complication. If the setup isn't clean, you pass. If you're wrong, you cut quick. If you're right, you ride until the energy fades. Your edge is momentum, breakout setups, and short-term. You're driven by chart structure, order flow, and sudden volume shifts. You don't gamble — you calculate fast and move on. You prefer high-RR scalps over long, slow trades.",
+  "walletAddress": "0x0000000000000000000000000000000000000000",
+  "privateKey": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "tradingPairs": [
+    {
+      "symbol": "ETH",
+      "market": "perp"
+    },
+    {
+      "symbol": "BTC",
+      "market": "perp"
+    }
+  ],
+  "researchInterval": 43200000,
+  "maxPositionSize": 0.5,
+  "leverage": 10,
+  "executionMode": "paper",
+  "models": {
+    "research": "perplexity/sonar-deep-research",
+    "decision": "moonshotai/kimi-k2.5"
+  }
+}
