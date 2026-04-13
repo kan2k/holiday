@@ -111,10 +111,13 @@ async function loadResearchForDate(targetDate) {
 // ─── Portfolio Simulator ──────────────────────────────────────────────────────
 
 class PortfolioSimulator {
-  constructor(startingBalance, leverage) {
+  constructor(startingBalance, leverage, stopLossPercent = 0, takeProfitPercent = 0) {
     this.startingBalance = startingBalance;
     this.balance = startingBalance;
     this.leverage = leverage;
+    this.stopLossPercent = stopLossPercent;
+    this.takeProfitPercent = takeProfitPercent;
+    this.currentPrices = {};
     this.positions = {};
     this.trades = [];
     this.equityHistory = [];
@@ -122,6 +125,11 @@ class PortfolioSimulator {
     this.liquidationDay = null;
     this.peakEquity = startingBalance;
     this.maxDrawdown = 0;
+    this.tpslEvents = [];
+  }
+
+  setCurrentPrices(prices) {
+    this.currentPrices = { ...prices };
   }
 
   _totalLockedMargin() {
@@ -130,6 +138,20 @@ class PortfolioSimulator {
 
   _equity(currentPrices) {
     return this.balance + this._totalLockedMargin() + this._calcUnrealizedPnl(currentPrices);
+  }
+
+  hasOpenPositions() {
+    return Object.keys(this.positions).length > 0;
+  }
+
+  closeAllPositions(prices, day, reason = 'fail-safe-close') {
+    const results = [];
+    for (const sym of Object.keys(this.positions)) {
+      const price = prices[sym] || this.positions[sym].entryPrice;
+      const result = this.closePosition(sym, price, day, reason);
+      if (result) results.push({ symbol: sym, ...result });
+    }
+    return results;
   }
 
   getAccountState(currentPrices) {
@@ -156,20 +178,33 @@ class PortfolioSimulator {
       this.closePosition(symbol, price, day, 'replaced');
     }
 
-    const equity = this.balance;
+    const equity = this._equity(this.currentPrices);
     const margin = equity * sizePercent;
     const notional = margin * this.leverage;
     const size = notional / price;
 
     this.balance -= margin;
-    this.positions[symbol] = {
-      side, size, entryPrice: price, margin, notional, openDay: day
-    };
+
+    const pos = { side, size, entryPrice: price, margin, notional, openDay: day };
+
+    if (this.stopLossPercent > 0) {
+      pos.slPrice = side === 'long'
+        ? price * (1 - this.stopLossPercent)
+        : price * (1 + this.stopLossPercent);
+    }
+    if (this.takeProfitPercent > 0) {
+      pos.tpPrice = side === 'long'
+        ? price * (1 + this.takeProfitPercent)
+        : price * (1 - this.takeProfitPercent);
+    }
+
+    this.positions[symbol] = pos;
 
     const trade = {
       day: formatYMD(day), action: side.toUpperCase(), symbol,
       entryPrice: price, size, sizePercent, margin, notional,
-      leverage: this.leverage
+      leverage: this.leverage,
+      slPrice: pos.slPrice, tpPrice: pos.tpPrice
     };
     this.trades.push(trade);
     return trade;
@@ -195,6 +230,43 @@ class PortfolioSimulator {
 
     delete this.positions[symbol];
     return { pnl, returnAmount };
+  }
+
+  checkTPSL(candlesBySymbol, day) {
+    const triggered = [];
+    const dayTs = Math.floor(day.getTime() / 1000);
+
+    for (const [sym, pos] of Object.entries({ ...this.positions })) {
+      const candles = candlesBySymbol[sym] || [];
+      const todayCandle = candles.find(c => c.time === dayTs);
+      if (!todayCandle) continue;
+
+      let hitSL = false, hitTP = false;
+
+      if (pos.side === 'long') {
+        if (pos.slPrice && todayCandle.low <= pos.slPrice) hitSL = true;
+        if (pos.tpPrice && todayCandle.high >= pos.tpPrice) hitTP = true;
+      } else {
+        if (pos.slPrice && todayCandle.high >= pos.slPrice) hitSL = true;
+        if (pos.tpPrice && todayCandle.low <= pos.tpPrice) hitTP = true;
+      }
+
+      if (hitSL && hitTP) hitSL = true; // conservative: assume SL hit first
+      if (hitSL) {
+        const result = this.closePosition(sym, pos.slPrice, day, 'stop-loss');
+        if (result) {
+          triggered.push({ symbol: sym, type: 'SL', price: pos.slPrice, pnl: result.pnl });
+          this.tpslEvents.push({ day: formatYMD(day), symbol: sym, type: 'stop-loss', price: pos.slPrice, pnl: result.pnl });
+        }
+      } else if (hitTP) {
+        const result = this.closePosition(sym, pos.tpPrice, day, 'take-profit');
+        if (result) {
+          triggered.push({ symbol: sym, type: 'TP', price: pos.tpPrice, pnl: result.pnl });
+          this.tpslEvents.push({ day: formatYMD(day), symbol: sym, type: 'take-profit', price: pos.tpPrice, pnl: result.pnl });
+        }
+      }
+    }
+    return triggered;
   }
 
   checkLiquidation(currentPrices, day) {
@@ -247,9 +319,13 @@ class PortfolioSimulator {
       maxDrawdown: parseFloat((this.maxDrawdown * 100).toFixed(2)),
       liquidated: this.liquidated,
       liquidationDay: this.liquidationDay,
+      stopLossPercent: this.stopLossPercent,
+      takeProfitPercent: this.takeProfitPercent,
+      tpslEvents: this.tpslEvents,
       trades: closedTrades.map(t => ({
         day: t.day, exitDay: t.exitDay, action: t.action, symbol: t.symbol,
         entryPrice: t.entryPrice, exitPrice: t.exitPrice,
+        slPrice: t.slPrice, tpPrice: t.tpPrice,
         pnl: parseFloat((t.pnl || 0).toFixed(2)), reason: t.reason
       })),
       equityHistory: this.equityHistory,
@@ -378,10 +454,17 @@ Options:
   --yes                 Skip confirmation
   --help                Show this help
 
+Options:
+  --sl <pct>       Stop-loss percentage (default: 0.05 = 5%)
+  --tp <pct>       Take-profit percentage (default: 0.10 = 10%)
+
 Notes:
   - Backtest runs at daily interval (one decision per day)
   - Research must be backfilled first: node scripts/backfill-research.js
   - Trades execute at candle close price (no slippage simulation)
+  - SL/TP checked against candle high/low each day
+  - Error fail-safe: CLOSE open positions (not HOLD)
+  - Equity-based position sizing (not cash-only)
   - Funding rates are excluded from PnL calculation`);
     process.exit(0);
   }
@@ -394,12 +477,16 @@ Notes:
   const toIdx = args.indexOf('--to');
   const balIdx = args.indexOf('--balance');
   const modelIdx = args.indexOf('--model');
+  const slIdx = args.indexOf('--sl');
+  const tpIdx = args.indexOf('--tp');
   const skipConfirm = args.includes('--yes');
 
   const from = parseDate(fromIdx !== -1 ? args[fromIdx + 1] : '2026-02-01');
   const to = parseDate(toIdx !== -1 ? args[toIdx + 1] : '2026-02-28');
-  const startingBalance = balIdx !== -1 ? parseFloat(args[balIdx + 1]) : 1000;
+  const startingBalance = balIdx !== -1 ? parseFloat(args[balIdx + 1]) : 10000;
   const modelOverride = modelIdx !== -1 ? args[modelIdx + 1] : null;
+  const stopLossPercent = slIdx !== -1 ? parseFloat(args[slIdx + 1]) : 0.05;
+  const takeProfitPercent = tpIdx !== -1 ? parseFloat(args[tpIdx + 1]) : 0.10;
 
   const configPath = path.join(process.cwd(), 'config', 'agents', `${agentId}.json`);
   let config;
@@ -460,6 +547,9 @@ Notes:
   console.error(`  Balance:    $${startingBalance.toLocaleString()}`);
   console.error(`  Leverage:   ${config.leverage}x`);
   console.error(`  Max size:   ${(config.maxPositionSize * 100).toFixed(1)}%`);
+  console.error(`  Stop-loss:  ${(stopLossPercent * 100).toFixed(1)}%`);
+  console.error(`  Take-profit: ${(takeProfitPercent * 100).toFixed(1)}%`);
+  console.error(`  Fail-safe:  CLOSE (context-aware)`);
   console.error(`  Interval:   daily (1 decision/day)`);
   console.error(``);
   console.error(`  Token estimate: ~${(totalIters * (inputTokensPerIter + outputTokensPerIter)).toLocaleString()} tokens`);
@@ -499,7 +589,7 @@ Notes:
   console.error(`  Backtest ID: ${backtestId}`);
 
   // Initialize portfolio and mock client
-  const portfolio = new PortfolioSimulator(startingBalance, config.leverage);
+  const portfolio = new PortfolioSimulator(startingBalance, config.leverage, stopLossPercent, takeProfitPercent);
   const mockClient = new BacktestHyperliquidClient(candlesBySymbol, portfolio, from);
 
   // Run backtest
@@ -517,6 +607,8 @@ Notes:
       try { currentPrices[sym] = await mockClient.getPrice(sym); } catch { /* no data */ }
     }
 
+    portfolio.setCurrentPrices(currentPrices);
+
     // Check liquidation before this day's decision
     if (portfolio.checkLiquidation(currentPrices, day)) {
       console.error(`  [${dayStr}] ⛔ LIQUIDATED — equity below maintenance margin`);
@@ -524,9 +616,16 @@ Notes:
       break;
     }
 
+    // Check SL/TP triggers using intraday high/low
+    const tpslTriggered = portfolio.checkTPSL(candlesBySymbol, day);
+    for (const ev of tpslTriggered) {
+      console.error(`  [${dayStr}] ${ev.type === 'SL' ? '⛔ STOP-LOSS' : '✅ TAKE-PROFIT'} ${ev.symbol} @ $${ev.price.toFixed(2)} | PnL: $${ev.pnl.toFixed(2)}`);
+    }
+
     portfolio.recordEquity(day, currentPrices);
 
-    console.error(`  [${dayStr}] Day ${i + 1}/${dates.length} | Balance: $${portfolio.balance.toFixed(2)}`);
+    const equity = portfolio._equity(currentPrices);
+    console.error(`  [${dayStr}] Day ${i + 1}/${dates.length} | Balance: $${portfolio.balance.toFixed(2)} | Equity: $${equity.toFixed(2)}`);
 
     try {
       // Create engines with mock client
@@ -627,7 +726,15 @@ Notes:
 
     } catch (err) {
       console.error(`    ✗ Error: ${err.message}`);
-      pastDecisions.push({ day: dayStr, action: 'HOLD', reason: `Error: ${err.message}` });
+      if (portfolio.hasOpenPositions()) {
+        const closed = portfolio.closeAllPositions(currentPrices, day, 'error-close');
+        for (const c of closed) {
+          console.error(`    → CLOSE ${c.symbol} (fail-safe) | PnL: $${c.pnl.toFixed(2)}`);
+        }
+        pastDecisions.push({ day: dayStr, action: 'CLOSE', reason: `Error fail-safe: ${err.message}` });
+      } else {
+        pastDecisions.push({ day: dayStr, action: 'HOLD', reason: `Error: ${err.message}` });
+      }
     }
 
     if (i < dates.length - 1) await sleep(500);
@@ -656,6 +763,12 @@ Notes:
     console.error(`  ⛔ LIQUIDATED on ${summary.liquidationDay}`);
   }
 
+  if (summary.tpslEvents && summary.tpslEvents.length > 0) {
+    console.error(`\n  SL/TP Events: ${summary.tpslEvents.length}`);
+    for (const ev of summary.tpslEvents) {
+      console.error(`    ${ev.day} ${ev.type.toUpperCase().padEnd(12)} ${ev.symbol.padEnd(8)} @ $${ev.price.toFixed(2)} | PnL: $${ev.pnl >= 0 ? '+' : ''}${ev.pnl.toFixed(2)}`);
+    }
+  }
   if (summary.trades.length > 0) {
     console.error(`\n  Trade Log:`);
     console.error(`  ${'Day'.padEnd(12)} ${'Action'.padEnd(8)} ${'Symbol'.padEnd(12)} ${'Entry'.padEnd(10)} ${'Exit'.padEnd(10)} ${'PnL'.padEnd(12)} Reason`);

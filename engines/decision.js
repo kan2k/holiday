@@ -206,7 +206,7 @@ export class DecisionEngine {
       return {
         success: false,
         error: errorMsg,
-        decision: { action: 'HOLD', reason: 'Decision process failed' }
+        decision: { action: 'CLOSE', reason: 'Decision process failed — fail-safe CLOSE' }
       };
     }
   }

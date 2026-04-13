@@ -210,7 +210,15 @@ This agent implements the Ralph Loop pattern:
       
       if (!decisionResult.success) {
         console.error(`[Agent] Decision failed: ${decisionResult.error}`);
-        decisionData.decision = { action: 'HOLD', reason: 'Decision engine error' };
+        let failSafeAction = 'HOLD';
+        try {
+          const acctState = await this.hyperliquid.getAccountState();
+          if (acctState?.assetPositions?.length > 0) {
+            failSafeAction = 'CLOSE';
+            console.error('[Agent] Open positions detected — fail-safe defaulting to CLOSE');
+          }
+        } catch { /* account check failed, stay with HOLD */ }
+        decisionData.decision = { action: failSafeAction, reason: `Decision engine error — fail-safe ${failSafeAction}` };
         decisionData.reasoning = decisionResult.error;
       } else {
         decisionData.decision = decisionResult.decision;
@@ -273,7 +281,7 @@ This agent implements the Ralph Loop pattern:
       
       // Still try to save what we have
       try {
-        decisionData.decision = decisionData.decision || { action: 'HOLD', reason: 'Error in iteration' };
+        decisionData.decision = decisionData.decision || { action: 'CLOSE', reason: 'Error in iteration — fail-safe CLOSE' };
         decisionData.reasoning = decisionData.reasoning || error.message;
         await saveDecisionToMemory(this.config.agentId, decisionData);
       } catch (saveError) {

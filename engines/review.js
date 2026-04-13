@@ -284,8 +284,8 @@ export class ReviewEngine {
         success: false,
         executed: false,
         error: errorMsg,
-        action: 'HOLD',
-        reason: 'Review process failed - defaulting to HOLD for safety'
+        action: 'CLOSE',
+        reason: 'Review process failed - defaulting to CLOSE for safety'
       };
     }
   }

@@ -27,6 +27,7 @@ prompts/*-AGENT.md
 
 # Technical report (kept local, not in repo)
 technical-report.md
+progress-report.md
 
 # Analysis data and personal notes
 analysis/
@@ -36,6 +37,9 @@ cost-analysis.md
 # Standalone HTML visualizations
 *.html
 !dashboard/index.html
+
+# Presentation (separate repo)
+presentation/
 
 # Build output
 dashboard/dist/
