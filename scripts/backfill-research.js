@@ -157,22 +157,28 @@ async function main() {
     console.error(`Usage: node scripts/backfill-research.js [options]
 
 Options:
-  --from YYYY-MM-DD     Start date (default: 2026-02-01)
-  --to   YYYY-MM-DD     End date   (default: 2026-02-28)
-  --query "..."         Research query (default: "Macro Market Today")
-  --yes                 Skip confirmation
-  --help                Show this help`);
+  --from YYYY-MM-DD       Start date (default: 2026-02-01)
+  --to   YYYY-MM-DD       End date   (default: 2026-02-28)
+  --query "..."           Research query (default: "Macro Market Today")
+  --concurrency <n>       Parallel Perplexity calls (default: 5, max: 20)
+  --yes                   Skip confirmation
+  --help                  Show this help`);
     process.exit(0);
   }
 
   const fromIdx = args.indexOf('--from');
   const toIdx = args.indexOf('--to');
   const queryIdx = args.indexOf('--query');
+  const concIdx = args.indexOf('--concurrency');
   const skipConfirm = args.includes('--yes');
 
   const from = parseDate(fromIdx !== -1 ? args[fromIdx + 1] : '2026-02-01');
   const to = parseDate(toIdx !== -1 ? args[toIdx + 1] : '2026-02-28');
   const query = queryIdx !== -1 ? args[queryIdx + 1] : 'Macro Market Today';
+  const concurrency = Math.max(
+    1,
+    Math.min(20, concIdx !== -1 ? parseInt(args[concIdx + 1], 10) || 5 : 5),
+  );
 
   const allDates = generateDateRange(from, to);
   const existing = await getExistingResearchDates();
@@ -188,6 +194,7 @@ Options:
   console.error(`  Model:      ${MODEL}`);
   console.error(`  Query:      "${query}"`);
   console.error(`  Filter:     search_before_date_filter (per day)`);
+  console.error(`  Parallel:   ${concurrency} call(s) in flight`);
   console.error(``);
 
   if (missing.length === 0) {
@@ -197,7 +204,11 @@ Options:
 
   const estimatedCost = missing.length * COST_PER_CALL_USD;
   console.error(`  Estimated cost: ~$${estimatedCost.toFixed(2)} (${missing.length} calls × $${COST_PER_CALL_USD}/call)`);
-  console.error(`  Estimated time: ~${missing.length * 45}s (${missing.length} × ~45s each)\n`);
+  const estSerial = missing.length * 45;
+  const estParallel = Math.ceil(missing.length / concurrency) * 45;
+  console.error(
+    `  Estimated time: ~${estParallel}s at concurrency ${concurrency} (serial would be ~${estSerial}s)\n`,
+  );
 
   if (!skipConfirm) {
     const confirmed = await askConfirm('  Proceed with backfill? (y/n) ');
@@ -210,33 +221,57 @@ Options:
   console.error('');
   let completed = 0;
   let failed = 0;
+  let started = 0;
 
-  for (const date of missing) {
+  const runOne = async (date) => {
+    const idx = ++started;
     const dateStr = formatYMD(date);
     const nextDay = new Date(date);
     nextDay.setUTCDate(nextDay.getUTCDate() + 1);
     const beforeFilter = formatDateForPerplexity(nextDay);
 
-    console.error(`  [${completed + failed + 1}/${missing.length}] Backfilling ${dateStr} (filter: before ${beforeFilter})...`);
+    console.error(
+      `  [${idx}/${missing.length}] → ${dateStr} (filter: before ${beforeFilter})`,
+    );
 
     try {
       const prompt = buildBackfillPrompt(query, dateStr);
       const text = await callPerplexity(prompt, beforeFilter);
       const saved = await saveResearch(date, query, text);
       completed++;
-      console.error(`    ✓ Saved ${saved.filename} (${text.length} chars)`);
+      console.error(
+        `    ✓ [${dateStr}] Saved ${saved.filename} (${text.length} chars) — ${completed + failed}/${missing.length} done`,
+      );
     } catch (err) {
       failed++;
-      console.error(`    ✗ Failed: ${err.message}`);
+      console.error(`    ✗ [${dateStr}] Failed: ${err.message}`);
     }
+  };
 
-    if (completed + failed < missing.length) {
-      await sleep(2000);
-    }
-  }
+  // Simple bounded pool: each worker pulls the next date until the queue drains.
+  const queue = missing.slice();
+  const workers = Array.from(
+    { length: Math.min(concurrency, queue.length) },
+    async () => {
+      while (queue.length > 0) {
+        const next = queue.shift();
+        if (!next) break;
+        await runOne(next);
+      }
+    },
+  );
+  await Promise.all(workers);
 
-  console.error(`\n  Done: ${completed} backfilled, ${failed} failed, ${allDates.length - missing.length} skipped`);
-  console.log(JSON.stringify({ completed, failed, skipped: allDates.length - missing.length }));
+  console.error(
+    `\n  Done: ${completed} backfilled, ${failed} failed, ${allDates.length - missing.length} skipped`,
+  );
+  console.log(
+    JSON.stringify({
+      completed,
+      failed,
+      skipped: allDates.length - missing.length,
+    }),
+  );
 }
 
 main().catch(err => {

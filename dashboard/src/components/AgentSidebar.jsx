@@ -14,7 +14,7 @@ const item = {
   show: { x: 0, opacity: 1, transition: { ease: [0.22, 1, 0.36, 1], duration: 0.5 } }
 };
 
-function AgentList({ agents, selected, onSelect }) {
+function AgentList({ agents, selected, onSelect, onDeleteAgent }) {
   return (
     <motion.div
       variants={container}
@@ -23,66 +23,85 @@ function AgentList({ agents, selected, onSelect }) {
       className="flex-1 overflow-y-auto py-1"
     >
       {agents.map(agent => (
-        <motion.button
+        <motion.div
           key={agent.id}
           variants={item}
-          onClick={() => onSelect(agent.id)}
-          whileHover={{ backgroundColor: 'rgba(0,212,170,0.04)' }}
-          whileTap={{ scale: 0.98 }}
-          className={`w-full text-left px-4 py-3 transition-colors relative group cursor-pointer ${
-            selected === agent.id
-              ? 'bg-terminal-accent/5'
-              : 'hover:bg-terminal-card'
+          className={`relative group ${
+            selected === agent.id ? 'bg-terminal-accent/5' : 'hover:bg-terminal-card'
           }`}
         >
-          {selected === agent.id && (
-            <motion.div
-              layoutId="activeAgent"
-              className="absolute left-0 top-0 bottom-0 w-[2px] bg-terminal-accent"
-              transition={{ type: 'spring', stiffness: 500, damping: 35 }}
-            />
-          )}
-
-          <div className="flex items-center gap-2">
-            <div className={`w-1.5 h-1.5 rounded-full ${
-              selected === agent.id ? 'bg-terminal-accent' : 'bg-terminal-border-light'
-            }`} />
-            <span className={`font-mono text-xs font-medium tracking-wide ${
-              selected === agent.id ? 'text-terminal-accent' : 'text-terminal-text'
-            }`}>
-              {agent.id}
-            </span>
-          </div>
-
-          <div className="mt-1.5 ml-3.5 flex flex-wrap gap-1">
-            {agent.pairs.slice(0, 4).map(pair => (
-              <span
-                key={pair}
-                className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-terminal-bg text-terminal-text-dim"
-              >
-                {pair}
-              </span>
-            ))}
-            {agent.pairs.length > 4 && (
-              <span className="text-[9px] font-mono text-terminal-text-dim">
-                +{agent.pairs.length - 4}
-              </span>
+          <motion.button
+            onClick={() => onSelect(agent.id)}
+            whileHover={{ backgroundColor: 'rgba(0,212,170,0.04)' }}
+            whileTap={{ scale: 0.98 }}
+            className="w-full text-left px-4 py-3 pr-11 transition-colors cursor-pointer"
+          >
+            {selected === agent.id && (
+              <motion.div
+                layoutId="activeAgent"
+                className="absolute left-0 top-0 bottom-0 w-[2px] bg-terminal-accent"
+                transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+              />
             )}
-          </div>
 
-          <div className="mt-1 ml-3.5 flex items-center gap-2">
-            <span className="text-[9px] font-mono text-terminal-text-dim">
-              {agent.leverage}x
-            </span>
-            <span className={`text-[9px] font-mono px-1 rounded ${
-              agent.mode === 'live'
-                ? 'text-terminal-short bg-terminal-short/10'
-                : 'text-terminal-amber bg-terminal-amber/10'
-            }`}>
-              {agent.mode}
-            </span>
-          </div>
-        </motion.button>
+            <div className="flex items-center gap-2">
+              <div className={`w-1.5 h-1.5 rounded-full ${
+                selected === agent.id ? 'bg-terminal-accent' : 'bg-terminal-border-light'
+              }`} />
+              <span className={`font-mono text-xs font-medium tracking-wide ${
+                selected === agent.id ? 'text-terminal-accent' : 'text-terminal-text'
+              }`}>
+                {agent.id}
+              </span>
+            </div>
+
+            <div className="mt-1.5 ml-3.5 flex flex-wrap gap-1">
+              {agent.pairs.slice(0, 4).map(pair => (
+                <span
+                  key={pair}
+                  className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-terminal-bg text-terminal-text-dim"
+                >
+                  {pair}
+                </span>
+              ))}
+              {agent.pairs.length > 4 && (
+                <span className="text-[9px] font-mono text-terminal-text-dim">
+                  +{agent.pairs.length - 4}
+                </span>
+              )}
+            </div>
+
+            <div className="mt-1 ml-3.5 flex items-center gap-2">
+              <span className="text-[9px] font-mono text-terminal-text-dim">
+                {agent.leverage}x
+              </span>
+              <span className={`text-[9px] font-mono px-1 rounded ${
+                agent.mode === 'live'
+                  ? 'text-terminal-short bg-terminal-short/10'
+                  : 'text-terminal-amber bg-terminal-amber/10'
+              }`}>
+                {agent.mode}
+              </span>
+            </div>
+          </motion.button>
+
+          {onDeleteAgent && (
+            <button
+              type="button"
+              title="Delete agent"
+              aria-label={`Delete agent ${agent.id}`}
+              className="absolute right-2 top-2 z-10 p-1.5 rounded border border-transparent text-terminal-text-dim
+                         hover:text-terminal-short hover:border-terminal-short/30 hover:bg-terminal-short/5
+                         opacity-60 group-hover:opacity-100 transition-opacity cursor-pointer"
+              onClick={(e) => onDeleteAgent(agent.id, e)}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" className="w-3.5 h-3.5" fill="currentColor" aria-hidden>
+                <path d="M5.5 5.5v6h1v-6h-1zm2 0v6h1v-6h-1zm2 0v6h1v-6h-1z" />
+                <path d="M2 3v1h1l1 9.5a1 1 0 0 0 1 .5h6a1 1 0 0 0 1-.5L13 4h1V3H2zm2.18 1h7.64l-.85 8H5.03l-.85-8zM6 1.5V2h4v-.5a.5.5 0 0 0-.5-.5h-3a.5.5 0 0 0-.5.5z" />
+              </svg>
+            </button>
+          )}
+        </motion.div>
       ))}
     </motion.div>
   );
@@ -173,7 +192,7 @@ function BacktestList({ backtests, selected, onSelect }) {
 }
 
 export default function AgentSidebar({
-  agents, selected, onSelect, onAddAgent,
+  agents, selected, onSelect, onDeleteAgent, onAddAgent,
   backtests = [], selectedBacktest, onSelectBacktest,
   activeTab = 'agents', onTabChange
 }) {
@@ -211,7 +230,7 @@ export default function AgentSidebar({
       {/* Content */}
       {activeTab === 'agents' ? (
         <>
-          <AgentList agents={agents} selected={selected} onSelect={onSelect} />
+          <AgentList agents={agents} selected={selected} onSelect={onSelect} onDeleteAgent={onDeleteAgent} />
           <div className="p-3 border-t border-terminal-border">
             <motion.button
               whileHover={{ scale: 1.02, backgroundColor: 'rgba(0,212,170,0.12)' }}

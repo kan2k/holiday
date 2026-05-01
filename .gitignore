@@ -25,13 +25,8 @@ agents/*
 # Generated prompts (auto-created per agent, regenerated on start)
 prompts/*-AGENT.md
 
-# Technical report (kept local, not in repo)
-technical-report.md
-progress-report.md
-
 # Analysis data and personal notes
 analysis/
-*-progress.md
 cost-analysis.md
 
 # Standalone HTML visualizations
@@ -46,6 +41,9 @@ dashboard/dist/
 
 # Vite
 dashboard/.vite/
+
+# Local dev helper (kept out of repo)
+dashboard/start-research-daemon.mjs
 
 # IDE / OS
 .DS_Store

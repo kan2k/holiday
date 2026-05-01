@@ -41,13 +41,38 @@ export default function App() {
       .then(r => r.json())
       .then(data => {
         setAgents(data);
-        if (data.length > 0 && !selectedAgent) {
-          setSelectedAgent(data[0].id);
-        }
+        setSelectedAgent((prev) => {
+          if (prev && data.some((a) => a.id === prev)) return prev;
+          return data.length > 0 ? data[0].id : null;
+        });
         setTimeout(() => setReady(true), 300);
       })
       .catch(() => setReady(true));
-  }, [selectedAgent]);
+  }, []);
+
+  const handleDeleteAgent = useCallback(
+    async (id, evt) => {
+      evt?.stopPropagation?.();
+      evt?.preventDefault?.();
+      if (
+        !window.confirm(
+          `Delete agent "${id}"? This removes its config file from disk (decision logs are kept).`,
+        )
+      ) {
+        return;
+      }
+      const res = await fetch(`/api/agents/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        window.alert(body.error || 'Delete failed');
+        return;
+      }
+      fetchAgents();
+    },
+    [fetchAgents],
+  );
 
   useEffect(() => { fetchAgents(); }, []);
 
@@ -141,6 +166,7 @@ export default function App() {
                   agents={agents}
                   selected={selectedAgent}
                   onSelect={(id) => { setSelectedAgent(id); setSidebarTab('agents'); }}
+                  onDeleteAgent={handleDeleteAgent}
                   onAddAgent={() => setShowCreateDialog(true)}
                   backtests={backtests}
                   selectedBacktest={selectedBacktest}

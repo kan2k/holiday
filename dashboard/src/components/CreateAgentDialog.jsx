@@ -222,7 +222,14 @@ function BacktestFeed({ agentId, period, onComplete }) {
 
           case 'error':
             setStatus('error');
-            addEvent({ id: Date.now(), type: 'error', icon: '❌', text: data.message, color: '#ef4444' });
+            addEvent({
+              id: Date.now(),
+              type: 'error',
+              icon: '❌',
+              text: data.message || 'Backtest failed',
+              detail: data.detail ? data.detail.slice(0, 400) : undefined,
+              color: '#ef4444',
+            });
             es.close();
             break;
         }
@@ -328,6 +335,119 @@ function BacktestFeed({ agentId, period, onComplete }) {
   );
 }
 
+// ─── Backtest Result Screen ───────────────────────────────────────────────────
+
+function BacktestResultScreen({ agentId, period, result }) {
+  const isProfit = (result?.totalPnl ?? 0) >= 0;
+  const pnlColor = isProfit ? '#00d4aa' : '#ef4444';
+  const trades = Array.isArray(result?.trades) ? result.trades : [];
+  const closedTrades = trades.filter(t => t.exitPrice !== undefined);
+  const wins = closedTrades.filter(t => (t.pnl ?? 0) > 0).length;
+  const losses = closedTrades.length - wins;
+
+  return (
+    <div className="space-y-3">
+      {/* Hero PnL */}
+      <motion.div
+        initial={{ scale: 0.9, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        transition={{ type: 'spring', stiffness: 260, damping: 22 }}
+        className="rounded-lg border p-4 text-center"
+        style={{ borderColor: pnlColor + '40', backgroundColor: pnlColor + '0a' }}
+      >
+        <div className="text-[9px] font-mono tracking-[0.2em] uppercase text-terminal-text-dim mb-1">
+          {result?.liquidated ? 'Liquidated' : 'Net PnL'}
+        </div>
+        <div className="text-3xl font-mono font-bold" style={{ color: pnlColor }}>
+          {isProfit ? '+' : ''}{result?.pnlPercent ?? 0}%
+        </div>
+        <div className="text-[10px] font-mono text-terminal-text-dim mt-1">
+          ${result?.startingBalance?.toFixed?.(2) ?? result?.startingBalance} →{' '}
+          <span style={{ color: pnlColor }}>${result?.endingBalance?.toFixed?.(2) ?? result?.endingBalance}</span>
+          <span className="ml-2">({isProfit ? '+' : ''}${result?.totalPnl?.toFixed?.(2) ?? result?.totalPnl})</span>
+        </div>
+        {period && (
+          <div className="text-[9px] font-mono text-terminal-text-dim mt-0.5">
+            {agentId} · {period.label} · {period.days} days
+          </div>
+        )}
+      </motion.div>
+
+      {/* Stats grid */}
+      <div className="grid grid-cols-4 gap-2">
+        {[
+          { label: 'Trades', value: result?.totalTrades ?? 0 },
+          { label: 'Win Rate', value: `${result?.winRate ?? 0}%` },
+          { label: 'Max DD', value: `${result?.maxDrawdown ?? 0}%` },
+          { label: 'Leverage', value: `${result?.leverage ?? 1}x` },
+        ].map(s => (
+          <div key={s.label} className="bg-terminal-bg rounded border border-terminal-border px-2 py-1.5 text-center">
+            <div className="text-[8px] font-mono tracking-[0.15em] uppercase text-terminal-text-dim">{s.label}</div>
+            <div className="text-[11px] font-mono font-bold text-terminal-text mt-0.5">{s.value}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Wins/Losses bar */}
+      {closedTrades.length > 0 && (
+        <div>
+          <div className="flex justify-between text-[9px] font-mono text-terminal-text-dim mb-1">
+            <span><span className="text-terminal-long">{wins}W</span> / <span className="text-terminal-short">{losses}L</span></span>
+            <span>{closedTrades.length} closed</span>
+          </div>
+          <div className="h-1 bg-terminal-border rounded-full overflow-hidden flex">
+            <div className="h-full bg-terminal-long" style={{ width: `${(wins / closedTrades.length) * 100}%` }} />
+            <div className="h-full bg-terminal-short" style={{ width: `${(losses / closedTrades.length) * 100}%` }} />
+          </div>
+        </div>
+      )}
+
+      {/* Trade list */}
+      {closedTrades.length > 0 && (
+        <div>
+          <div className="text-[9px] font-mono tracking-[0.15em] uppercase text-terminal-text-dim mb-1.5">
+            Recent trades
+          </div>
+          <div className="max-h-[160px] overflow-y-auto space-y-0.5 pr-1">
+            {closedTrades.slice(-8).reverse().map((t, i) => {
+              const pnl = t.pnl ?? 0;
+              const good = pnl >= 0;
+              return (
+                <div
+                  key={i}
+                  className="flex items-center justify-between px-2 py-1 rounded text-[9px] font-mono"
+                  style={{ backgroundColor: (good ? '#00d4aa' : '#ef4444') + '08' }}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-terminal-text-dim w-14 truncate">{t.exitDay || t.day}</span>
+                    <span
+                      className="w-10 text-center font-bold"
+                      style={{ color: t.action === 'LONG' ? '#00d4aa' : t.action === 'SHORT' ? '#ef4444' : '#E8A838' }}
+                    >{t.action}</span>
+                    <span className="text-terminal-text truncate">{t.symbol}</span>
+                    {t.reason && (
+                      <span className="text-terminal-text-dim text-[8px] uppercase tracking-wider">· {t.reason}</span>
+                    )}
+                  </div>
+                  <span className="font-bold" style={{ color: good ? '#00d4aa' : '#ef4444' }}>
+                    {good ? '+' : ''}${pnl.toFixed(2)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {closedTrades.length === 0 && (
+        <div className="text-center py-4 text-[10px] font-mono text-terminal-text-dim">
+          No trades executed during this period.
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Dialog ──────────────────────────────────────────────────────────────
 
 export default function CreateAgentDialog({ open, onClose, onCreated }) {
@@ -347,6 +467,7 @@ export default function CreateAgentDialog({ open, onClose, onCreated }) {
   const [createdAgentId, setCreatedAgentId] = useState(null);
   const [backtestPeriod, setBacktestPeriod] = useState(null);
   const [backtesting, setBacktesting] = useState(false);
+  const [backtestResult, setBacktestResult] = useState(null);
 
   const recommendedLev = PERSONAS.find(p => p.id === persona)?.leverage || 1;
 
@@ -367,6 +488,7 @@ export default function CreateAgentDialog({ open, onClose, onCreated }) {
     setCreatedAgentId(null);
     setBacktestPeriod(null);
     setBacktesting(false);
+    setBacktestResult(null);
   }, []);
 
   const handleClose = useCallback(() => {
@@ -424,11 +546,18 @@ export default function CreateAgentDialog({ open, onClose, onCreated }) {
 
   const handleStartBacktest = () => {
     if (!backtestPeriod) return;
+    setBacktestResult(null);
     setBacktesting(true);
   };
 
-  const handleBacktestComplete = () => {
+  const handleBacktestComplete = (result) => {
+    setBacktestResult(result || null);
     setBacktesting(false);
+  };
+
+  const handleRunAnotherBacktest = () => {
+    setBacktestResult(null);
+    setBacktestPeriod(null);
   };
 
   const canNext = () => {
@@ -697,6 +826,12 @@ export default function CreateAgentDialog({ open, onClose, onCreated }) {
                   onComplete={handleBacktestComplete}
                 />
               </div>
+            ) : backtestResult ? (
+              <BacktestResultScreen
+                agentId={createdAgentId}
+                period={BACKTEST_PERIODS.find(p => p.id === backtestPeriod)}
+                result={backtestResult}
+              />
             ) : (
               <div>
                 <div className="text-center mb-4">
@@ -777,7 +912,14 @@ export default function CreateAgentDialog({ open, onClose, onCreated }) {
     }
   };
 
-  const stepLabel = step <= 5 ? `Step ${step + 1}/6` : (backtesting ? 'Backtesting...' : 'Complete');
+  const stepLabel =
+    step <= 5
+      ? `Step ${step + 1}/6`
+      : backtesting
+        ? 'Backtesting...'
+        : backtestResult
+          ? 'Backtest Complete'
+          : 'Complete';
   const isLastConfig = step === 5;
   const isBacktestStep = step === 6;
 
@@ -806,7 +948,13 @@ export default function CreateAgentDialog({ open, onClose, onCreated }) {
             <div className="flex items-center justify-between px-5 py-3 border-b border-terminal-border">
               <div className="flex items-center gap-3">
                 <span className="text-[10px] font-mono tracking-[0.2em] text-terminal-accent uppercase font-bold">
-                  {isBacktestStep ? (backtesting ? 'Backtesting' : 'Agent Created') : 'New Agent'}
+                  {isBacktestStep
+                    ? backtesting
+                      ? 'Backtesting'
+                      : backtestResult
+                        ? 'Results'
+                        : 'Agent Created'
+                    : 'New Agent'}
                 </span>
                 <span className="text-[9px] font-mono text-terminal-text-dim">{stepLabel}</span>
               </div>
@@ -857,6 +1005,19 @@ export default function CreateAgentDialog({ open, onClose, onCreated }) {
               {isBacktestStep ? (
                 backtesting ? (
                   <span className="text-[9px] font-mono text-terminal-text-dim">Backtest running — please wait</span>
+                ) : backtestResult ? (
+                  <>
+                    <button
+                      onClick={handleRunAnotherBacktest}
+                      className="px-4 py-1.5 text-[10px] font-mono text-terminal-text-dim hover:text-terminal-text border border-terminal-border rounded cursor-pointer transition-colors"
+                    >RUN ANOTHER</button>
+                    <motion.button
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={handleClose}
+                      className="px-5 py-1.5 text-[10px] font-mono font-bold bg-terminal-accent/20 text-terminal-accent border border-terminal-accent/40 rounded hover:bg-terminal-accent/30 cursor-pointer transition-all"
+                    >VIEW IN DASHBOARD</motion.button>
+                  </>
                 ) : (
                   <>
                     <button

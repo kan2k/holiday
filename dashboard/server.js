@@ -1,20 +1,69 @@
-import express from 'express';
-import cors from 'cors';
-import fs from 'fs/promises';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { randomBytes } from 'crypto';
+import express from "express";
+import cors from "cors";
+import fs from "fs/promises";
+import path from "path";
+import { fileURLToPath } from "url";
+import { ethers } from "ethers";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(__dirname, "..");
 const PORT = 3001;
+
+/**
+ * Extract the last top-level JSON object from a buffer that may be
+ * polluted with log lines preceding the final `JSON.stringify(...)` output.
+ * Returns the parsed object, or null if no valid JSON tail is found.
+ */
+function extractTrailingJson(buffer) {
+  if (!buffer) return null;
+  const trimmed = buffer.trimEnd();
+  if (!trimmed.endsWith("}") && !trimmed.endsWith("]")) return null;
+
+  // Walk backwards matching braces/brackets, skipping anything inside strings.
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let start = -1;
+  for (let i = trimmed.length - 1; i >= 0; i--) {
+    const ch = trimmed[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (inString) {
+      if (ch === "\\") {
+        escape = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === "}" || ch === "]") {
+      depth++;
+    } else if (ch === "{" || ch === "[") {
+      depth--;
+      if (depth === 0) {
+        start = i;
+        break;
+      }
+    }
+  }
+  if (start === -1) return null;
+  try {
+    return JSON.parse(trimmed.slice(start));
+  } catch {
+    return null;
+  }
+}
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 // Serve built frontend in production
-const distPath = path.join(__dirname, 'dist');
+const distPath = path.join(__dirname, "dist");
 try {
   await fs.access(distPath);
   app.use(express.static(distPath));
@@ -34,23 +83,24 @@ const PERSONA_TEXT = {
 /**
  * GET /api/agents - List all agents
  */
-app.get('/api/agents', async (req, res) => {
+app.get("/api/agents", async (req, res) => {
   try {
-    const agentsDir = path.join(ROOT, 'config', 'agents');
+    const agentsDir = path.join(ROOT, "config", "agents");
     const files = await fs.readdir(agentsDir);
     const agents = [];
 
     for (const file of files) {
-      if (!file.endsWith('.json')) continue;
-      const content = await fs.readFile(path.join(agentsDir, file), 'utf-8');
+      if (!file.endsWith(".json")) continue;
+      if (file.endsWith(".example.json")) continue;
+      const content = await fs.readFile(path.join(agentsDir, file), "utf-8");
       const config = JSON.parse(content);
       agents.push({
         id: config.agentId,
-        persona: config.persona?.slice(0, 120) + '...',
-        pairs: config.tradingPairs?.map(p => p.symbol) || [],
+        persona: config.persona?.slice(0, 120) + "...",
+        pairs: config.tradingPairs?.map((p) => p.symbol) || [],
         leverage: config.leverage || 1,
-        mode: config.executionMode || 'paper',
-        loopInterval: config.loopInterval
+        mode: config.executionMode || "paper",
+        loopInterval: config.loopInterval,
       });
     }
 
@@ -63,44 +113,59 @@ app.get('/api/agents', async (req, res) => {
 /**
  * POST /api/agents - Create a new agent
  */
-app.post('/api/agents', async (req, res) => {
+app.post("/api/agents", async (req, res) => {
   try {
-    const { name, persona, leverage, pairs, tradingPairs: pairsFromBody, loopInterval, decisionModel } = req.body;
+    const {
+      name,
+      persona,
+      leverage,
+      pairs,
+      tradingPairs: pairsFromBody,
+      loopInterval,
+      decisionModel,
+    } = req.body;
 
     if (!name || !name.trim()) {
-      return res.status(400).json({ error: 'Agent name is required' });
+      return res.status(400).json({ error: "Agent name is required" });
     }
 
-    const agentId = name.toLowerCase().replace(/[^a-z0-9-]/g, '-');
-    const configPath = path.join(ROOT, 'config', 'agents', `${agentId}.json`);
+    const agentId = name.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+    const configPath = path.join(ROOT, "config", "agents", `${agentId}.json`);
 
     // Check if already exists
     try {
       await fs.access(configPath);
-      return res.status(409).json({ error: `Agent "${agentId}" already exists` });
+      return res
+        .status(409)
+        .json({ error: `Agent "${agentId}" already exists` });
     } catch {}
 
-    // Generate a wallet (random hex private key)
-    const privateKey = '0x' + randomBytes(32).toString('hex');
-    const walletAddress = '0x' + randomBytes(20).toString('hex');
+    // Generate a wallet with matching address/key (validated by utils/validation.js).
+    const wallet = ethers.Wallet.createRandom();
+    const privateKey = wallet.privateKey;
+    const walletAddress = wallet.address;
 
     // Resolve persona text
     let personaText = PERSONA_TEXT[persona] || persona;
-    if (typeof personaText !== 'string' || !personaText.trim()) {
+    if (typeof personaText !== "string" || !personaText.trim()) {
       personaText = PERSONA_TEXT.cautious;
     }
 
     // Accept pair objects { symbol, market } or legacy string arrays
     let tradingPairs;
-    if (pairsFromBody && Array.isArray(pairsFromBody) && pairsFromBody.length > 0) {
-      tradingPairs = pairsFromBody.map(p => ({
+    if (
+      pairsFromBody &&
+      Array.isArray(pairsFromBody) &&
+      pairsFromBody.length > 0
+    ) {
+      tradingPairs = pairsFromBody.map((p) => ({
         symbol: p.symbol,
-        market: p.market || 'perp'
+        market: p.market || "perp",
       }));
     } else {
-      tradingPairs = (pairs || ['ETH', 'BTC']).map(symbol => ({
-        symbol: typeof symbol === 'string' ? symbol.toUpperCase() : symbol,
-        market: 'perp'
+      tradingPairs = (pairs || ["ETH", "BTC"]).map((symbol) => ({
+        symbol: typeof symbol === "string" ? symbol.toUpperCase() : symbol,
+        market: "perp",
       }));
     }
 
@@ -114,25 +179,25 @@ app.post('/api/agents', async (req, res) => {
       researchInterval: 43200000,
       maxPositionSize: 0.5,
       leverage: leverage || 1,
-      executionMode: 'paper',
+      executionMode: "paper",
       models: {
-        research: 'perplexity/sonar-deep-research',
-        decision: decisionModel || 'moonshotai/kimi-k2.5'
-      }
+        research: "perplexity/sonar-deep-research",
+        decision: decisionModel || "moonshotai/kimi-k2.5",
+      },
     };
 
     await fs.mkdir(path.dirname(configPath), { recursive: true });
-    await fs.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
+    await fs.writeFile(configPath, JSON.stringify(config, null, 2), "utf-8");
 
     // Create memory directories
-    await fs.mkdir(path.join(ROOT, 'memory', 'decisions'), { recursive: true });
+    await fs.mkdir(path.join(ROOT, "memory", "decisions"), { recursive: true });
 
     res.json({
       id: agentId,
-      pairs: tradingPairs.map(p => p.symbol),
+      pairs: tradingPairs.map((p) => p.symbol),
       leverage: config.leverage,
       mode: config.executionMode,
-      walletAddress
+      walletAddress,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -142,10 +207,15 @@ app.post('/api/agents', async (req, res) => {
 /**
  * GET /api/agents/:id - Get agent config
  */
-app.get('/api/agents/:id', async (req, res) => {
+app.get("/api/agents/:id", async (req, res) => {
   try {
-    const configPath = path.join(ROOT, 'config', 'agents', `${req.params.id}.json`);
-    const content = await fs.readFile(configPath, 'utf-8');
+    const configPath = path.join(
+      ROOT,
+      "config",
+      "agents",
+      `${req.params.id}.json`,
+    );
+    const content = await fs.readFile(configPath, "utf-8");
     const config = JSON.parse(content);
     // Don't expose private key
     delete config.privateKey;
@@ -156,17 +226,81 @@ app.get('/api/agents/:id', async (req, res) => {
 });
 
 /**
+ * DELETE /api/agents/:id — Remove agent config (does not delete decision history files).
+ * Resolves the file by config.agentId (list UI id), not only `<id>.json`, so filenames
+ * like `my-trader.example.json` still match agentId `my-trader` (examples are blocked).
+ */
+app.delete("/api/agents/:id", async (req, res) => {
+  try {
+    const rawId = req.params.id;
+    if (!rawId || /[/\\]/.test(rawId) || rawId.includes("..")) {
+      return res.status(400).json({ error: "Invalid agent id" });
+    }
+
+    const agentsDir = path.resolve(ROOT, "config", "agents");
+    let configPath = null;
+
+    const directPath = path.resolve(agentsDir, `${rawId}.json`);
+    const relDirect = path.relative(agentsDir, directPath);
+    if (
+      !relDirect.startsWith("..") &&
+      !path.isAbsolute(relDirect) &&
+      relDirect !== ""
+    ) {
+      try {
+        await fs.access(directPath);
+        configPath = directPath;
+      } catch {}
+    }
+
+    if (!configPath) {
+      const files = await fs.readdir(agentsDir);
+      for (const file of files) {
+        if (!file.endsWith(".json")) continue;
+        const candidate = path.resolve(agentsDir, file);
+        const rel = path.relative(agentsDir, candidate);
+        if (rel.startsWith("..") || path.isAbsolute(rel)) continue;
+        let config;
+        try {
+          const content = await fs.readFile(candidate, "utf-8");
+          config = JSON.parse(content);
+        } catch {
+          continue;
+        }
+        if (config.agentId === rawId) {
+          configPath = candidate;
+          break;
+        }
+      }
+    }
+
+    if (!configPath) {
+      return res.status(404).json({ error: `Agent ${rawId} not found` });
+    }
+
+    if (path.basename(configPath).endsWith(".example.json")) {
+      return res.status(403).json({ error: "Cannot delete example templates" });
+    }
+
+    await fs.unlink(configPath);
+    res.json({ ok: true, id: rawId });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
  * GET /api/agents/:id/decisions?offset=0&limit=10
  */
-app.get('/api/agents/:id/decisions', async (req, res) => {
+app.get("/api/agents/:id/decisions", async (req, res) => {
   try {
-    const decisionsDir = path.join(ROOT, 'memory', 'decisions');
+    const decisionsDir = path.join(ROOT, "memory", "decisions");
     const offset = parseInt(req.query.offset) || 0;
     const limit = parseInt(req.query.limit) || 10;
 
     let files = await fs.readdir(decisionsDir);
     files = files
-      .filter(f => f.startsWith(req.params.id) && f.endsWith('.md'))
+      .filter((f) => f.startsWith(req.params.id) && f.endsWith(".md"))
       .sort()
       .reverse(); // newest first
 
@@ -175,15 +309,26 @@ app.get('/api/agents/:id/decisions', async (req, res) => {
 
     const decisions = [];
     for (const file of sliced) {
-      const content = await fs.readFile(path.join(decisionsDir, file), 'utf-8');
+      const content = await fs.readFile(path.join(decisionsDir, file), "utf-8");
 
       // Parse timestamp from filename
-      const match = file.match(/(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})/);
+      const match = file.match(
+        /(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})/,
+      );
       if (!match) continue;
       const [, year, month, day, hour, min, sec] = match;
-      const timestamp = new Date(year, month - 1, day, hour, min, sec).toISOString();
+      const timestamp = new Date(
+        year,
+        month - 1,
+        day,
+        hour,
+        min,
+        sec,
+      ).toISOString();
 
-      const actionMatch = content.match(/\*\*Action\*\*:\s*(LONG|SHORT|CLOSE|HOLD|BUY|SELL)/i);
+      const actionMatch = content.match(
+        /\*\*Action\*\*:\s*(LONG|SHORT|CLOSE|HOLD|BUY|SELL)/i,
+      );
       const symbolMatch = content.match(/\*\*Symbol\*\*:\s*(\w+)/i);
       const reasonMatch = content.match(/\*\*Reason\*\*:\s*(.+)/i);
       const sizeMatch = content.match(/\*\*Size\*\*:\s*([\d.]+)%?/i);
@@ -191,10 +336,10 @@ app.get('/api/agents/:id/decisions', async (req, res) => {
       decisions.push({
         file,
         timestamp,
-        action: actionMatch?.[1]?.toUpperCase() || 'HOLD',
-        symbol: symbolMatch?.[1]?.toUpperCase() || '',
-        reason: reasonMatch?.[1] || '',
-        size: sizeMatch ? parseFloat(sizeMatch[1]) : null
+        action: actionMatch?.[1]?.toUpperCase() || "HOLD",
+        symbol: symbolMatch?.[1]?.toUpperCase() || "",
+        reason: reasonMatch?.[1] || "",
+        size: sizeMatch ? parseFloat(sizeMatch[1]) : null,
       });
     }
 
@@ -207,33 +352,38 @@ app.get('/api/agents/:id/decisions', async (req, res) => {
 /**
  * GET /api/agents/:id/decisions/all - All decisions (for chart markers)
  */
-app.get('/api/agents/:id/decisions/all', async (req, res) => {
+app.get("/api/agents/:id/decisions/all", async (req, res) => {
   try {
-    const decisionsDir = path.join(ROOT, 'memory', 'decisions');
+    const decisionsDir = path.join(ROOT, "memory", "decisions");
     let files = await fs.readdir(decisionsDir);
     files = files
-      .filter(f => f.startsWith(req.params.id) && f.endsWith('.md'))
+      .filter((f) => f.startsWith(req.params.id) && f.endsWith(".md"))
       .sort();
 
     const decisions = [];
     for (const file of files) {
-      const content = await fs.readFile(path.join(decisionsDir, file), 'utf-8');
-      const match = file.match(/(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})/);
+      const content = await fs.readFile(path.join(decisionsDir, file), "utf-8");
+      const match = file.match(
+        /(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})/,
+      );
       if (!match) continue;
       const [, year, month, day, hour, min, sec] = match;
-      const timestamp = new Date(year, month - 1, day, hour, min, sec).getTime() / 1000;
+      const timestamp =
+        new Date(year, month - 1, day, hour, min, sec).getTime() / 1000;
 
-      const actionMatch = content.match(/\*\*Action\*\*:\s*(LONG|SHORT|CLOSE|HOLD|BUY|SELL)/i);
+      const actionMatch = content.match(
+        /\*\*Action\*\*:\s*(LONG|SHORT|CLOSE|HOLD|BUY|SELL)/i,
+      );
       const symbolMatch = content.match(/\*\*Symbol\*\*:\s*(\w+)/i);
       const sizeMatch = content.match(/\*\*Size\*\*:\s*([\d.]+)%?/i);
       const reasonMatch = content.match(/\*\*Reason\*\*:\s*(.+)/i);
 
       decisions.push({
         timestamp,
-        action: actionMatch?.[1]?.toUpperCase() || 'HOLD',
-        symbol: symbolMatch?.[1]?.toUpperCase() || '',
+        action: actionMatch?.[1]?.toUpperCase() || "HOLD",
+        symbol: symbolMatch?.[1]?.toUpperCase() || "",
         size: sizeMatch ? parseFloat(sizeMatch[1]) : null,
-        reason: reasonMatch?.[1] || ''
+        reason: reasonMatch?.[1] || "",
       });
     }
 
@@ -244,38 +394,44 @@ app.get('/api/agents/:id/decisions/all', async (req, res) => {
 });
 
 const INTERVAL_MS = {
-  '1m': 60000, '5m': 300000, '15m': 900000,
-  '1h': 3600000, '4h': 14400000, '1d': 86400000
+  "1m": 60000,
+  "5m": 300000,
+  "15m": 900000,
+  "1h": 3600000,
+  "4h": 14400000,
+  "1d": 86400000,
 };
 
 const MAX_CANDLES_PER_REQUEST = 5000;
 const BATCH_DELAY_MS = 250;
 
 async function fetchCandleBatch(symbol, interval, startTime, endTime) {
-  const response = await fetch('https://api.hyperliquid.xyz/info', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+  const response = await fetch("https://api.hyperliquid.xyz/info", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      type: 'candleSnapshot',
-      req: { coin: symbol, interval, startTime, endTime }
-    })
+      type: "candleSnapshot",
+      req: { coin: symbol, interval, startTime, endTime },
+    }),
   });
   return response.json();
 }
 
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 /**
  * GET /api/candles/:symbol?interval=1h&days=7&since=timestamp_ms&maxCandles=15000
  * Fetches multiple batches if needed (5000 per request, rate-limited).
  * Symbol should be URL-encoded (e.g. GOLD%2FUSDC for GOLD/USDC).
  */
-app.get('/api/candles/:symbol', async (req, res) => {
+app.get("/api/candles/:symbol", async (req, res) => {
   try {
     const raw = decodeURIComponent(req.params.symbol);
     // Preserve case for HIP-3 symbols (e.g. xyz:GOLD) since the API is case-sensitive
-    const symbol = raw.includes(':') ? raw : raw.toUpperCase();
-    const interval = req.query.interval || '1h';
+    const symbol = raw.includes(":") ? raw : raw.toUpperCase();
+    const interval = req.query.interval || "1h";
     const sinceMs = parseInt(req.query.since);
     const maxCandles = Math.min(parseInt(req.query.maxCandles) || 15000, 50000);
 
@@ -287,19 +443,29 @@ app.get('/api/candles/:symbol', async (req, res) => {
       startTime = sinceMs;
     } else {
       const days = parseInt(req.query.days) || 7;
-      startTime = endTime - (days * 86400000);
+      startTime = endTime - days * 86400000;
     }
 
     const totalCandlesNeeded = Math.ceil((endTime - startTime) / ms);
-    const batchCount = Math.ceil(Math.min(totalCandlesNeeded, maxCandles) / MAX_CANDLES_PER_REQUEST);
+    const batchCount = Math.ceil(
+      Math.min(totalCandlesNeeded, maxCandles) / MAX_CANDLES_PER_REQUEST,
+    );
 
     const allCandles = new Map();
     let batchEnd = endTime;
 
     for (let i = 0; i < batchCount; i++) {
-      const batchStart = Math.max(startTime, batchEnd - MAX_CANDLES_PER_REQUEST * ms);
+      const batchStart = Math.max(
+        startTime,
+        batchEnd - MAX_CANDLES_PER_REQUEST * ms,
+      );
 
-      const candles = await fetchCandleBatch(symbol, interval, batchStart, batchEnd);
+      const candles = await fetchCandleBatch(
+        symbol,
+        interval,
+        batchStart,
+        batchEnd,
+      );
       if (Array.isArray(candles)) {
         for (const c of candles) {
           const time = Math.floor(c.t / 1000);
@@ -309,7 +475,7 @@ app.get('/api/candles/:symbol', async (req, res) => {
             high: parseFloat(c.h),
             low: parseFloat(c.l),
             close: parseFloat(c.c),
-            volume: parseFloat(c.v)
+            volume: parseFloat(c.v),
           });
         }
       }
@@ -319,7 +485,9 @@ app.get('/api/candles/:symbol', async (req, res) => {
       if (i < batchCount - 1) await sleep(BATCH_DELAY_MS);
     }
 
-    const formatted = Array.from(allCandles.values()).sort((a, b) => a.time - b.time);
+    const formatted = Array.from(allCandles.values()).sort(
+      (a, b) => a.time - b.time,
+    );
     res.json(formatted);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -329,9 +497,9 @@ app.get('/api/candles/:symbol', async (req, res) => {
 /**
  * GET /api/research - List all research reports with metadata
  */
-app.get('/api/research', async (req, res) => {
+app.get("/api/research", async (req, res) => {
   try {
-    const researchDir = path.join(ROOT, 'memory', 'research');
+    const researchDir = path.join(ROOT, "memory", "research");
     let files;
     try {
       files = await fs.readdir(researchDir);
@@ -339,34 +507,40 @@ app.get('/api/research', async (req, res) => {
       return res.json([]);
     }
 
-    files = files.filter(f => f.endsWith('.md')).sort();
+    files = files.filter((f) => f.endsWith(".md")).sort();
 
     const reports = [];
     for (const file of files) {
-      const match = file.match(/(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})/);
+      const match = file.match(
+        /(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})/,
+      );
       if (!match) continue;
       const [, year, month, day, hour, min, sec] = match;
-      const timestamp = new Date(year, month - 1, day, hour, min, sec).getTime() / 1000;
+      const timestamp =
+        new Date(year, month - 1, day, hour, min, sec).getTime() / 1000;
 
-      const content = await fs.readFile(path.join(researchDir, file), 'utf-8');
+      const content = await fs.readFile(path.join(researchDir, file), "utf-8");
 
       const queryMatch = content.match(/## Query\s*\n(.+)/);
-      const query = queryMatch?.[1]?.trim() || '';
+      const query = queryMatch?.[1]?.trim() || "";
 
       // Extract summary: text between ## Summary and the next ## heading
-      const summaryMatch = content.match(/## Summary\s*\n([\s\S]*?)(?=\n## (?:Key Points|Sources|Raw Response)|$)/);
-      let summary = summaryMatch?.[1]?.trim() || '';
+      const summaryMatch = content.match(
+        /## Summary\s*\n([\s\S]*?)(?=\n## (?:Key Points|Sources|Raw Response)|$)/,
+      );
+      let summary = summaryMatch?.[1]?.trim() || "";
       // Truncate for the tooltip to first ~300 chars
-      const shortSummary = summary.length > 300
-        ? summary.slice(0, 300).replace(/\s+\S*$/, '') + '...'
-        : summary;
+      const shortSummary =
+        summary.length > 300
+          ? summary.slice(0, 300).replace(/\s+\S*$/, "") + "..."
+          : summary;
 
       reports.push({
         file,
         timestamp,
         query,
         shortSummary,
-        fullContent: content
+        fullContent: content,
       });
     }
 
@@ -379,10 +553,14 @@ app.get('/api/research', async (req, res) => {
 /**
  * GET /api/summary/:id - Rolling summary
  */
-app.get('/api/summary/:id', async (req, res) => {
+app.get("/api/summary/:id", async (req, res) => {
   try {
-    const summaryPath = path.join(ROOT, 'memory', `${req.params.id}-summary.md`);
-    const content = await fs.readFile(summaryPath, 'utf-8');
+    const summaryPath = path.join(
+      ROOT,
+      "memory",
+      `${req.params.id}-summary.md`,
+    );
+    const content = await fs.readFile(summaryPath, "utf-8");
     res.json({ summary: content });
   } catch {
     res.json({ summary: null });
@@ -392,97 +570,203 @@ app.get('/api/summary/:id', async (req, res) => {
 /**
  * POST /api/backtests/run - Run a backtest via SSE (Server-Sent Events)
  */
-app.get('/api/backtests/run', async (req, res) => {
+app.get("/api/backtests/run", async (req, res) => {
   const { agent, from, to, balance, model } = req.query;
-  if (!agent) return res.status(400).json({ error: 'agent is required' });
+  if (!agent) return res.status(400).json({ error: "agent is required" });
 
   res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
   });
 
   const send = (type, data) => {
     res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
   };
 
-  const { spawn } = await import('child_process');
+  // Fast-fail if the agent config does not exist so the UI gets a clear error.
+  const agentsDir = path.resolve(ROOT, "config", "agents");
+  let agentFile = path.resolve(agentsDir, `${agent}.json`);
+  try {
+    await fs.access(agentFile);
+  } catch {
+    let found = null;
+    try {
+      const files = await fs.readdir(agentsDir);
+      for (const file of files) {
+        if (!file.endsWith(".json")) continue;
+        if (file.endsWith(".example.json")) continue;
+        try {
+          const content = await fs.readFile(path.join(agentsDir, file), "utf-8");
+          const config = JSON.parse(content);
+          if (config.agentId === agent) {
+            found = path.join(agentsDir, file);
+            break;
+          }
+        } catch {}
+      }
+    } catch {}
+    if (!found) {
+      send("error", {
+        message: `Agent "${agent}" not found. Create it first.`,
+      });
+      return res.end();
+    }
+    agentFile = found;
+  }
+
+  const { spawn } = await import("child_process");
+  const nodePath = process.execPath;
   const args = [
-    'scripts/backtest.js',
-    '--agent', agent,
-    '--from', from || '2026-02-10',
-    '--to', to || '2026-03-10',
-    '--balance', balance || '1000',
-    '--yes'
+    "scripts/backtest.js",
+    "--agent",
+    agent,
+    "--from",
+    from || "2026-02-10",
+    "--to",
+    to || "2026-03-10",
+    "--balance",
+    balance || "1000",
+    "--yes",
   ];
-  if (model) args.push('--model', model);
+  if (model) args.push("--model", model);
 
-  send('status', { message: 'Starting backtest...', phase: 'init' });
+  send("status", {
+    message: "Starting backtest...",
+    phase: "init",
+    agentFile: path.relative(ROOT, agentFile),
+  });
 
-  const child = spawn('node', args, { cwd: ROOT, env: process.env });
-  let stdoutBuffer = '';
+  const child = spawn(nodePath, args, { cwd: ROOT, env: process.env });
+  let stdoutBuffer = "";
+  let stderrBuffer = "";
 
-  child.stderr.on('data', (chunk) => {
+  child.stderr.on("data", (chunk) => {
     const text = chunk.toString();
-    const lines = text.split('\n').filter(l => l.trim());
+    stderrBuffer += text;
+    const lines = text.split("\n").filter((l) => l.trim());
 
     for (const line of lines) {
       const trimmed = line.trim();
 
-      if (trimmed.startsWith('[Decision:') && trimmed.includes('Starting')) {
-        send('action', { action: 'decision_start', message: trimmed, phase: 'decision' });
-      } else if (trimmed.startsWith('[Decision:') && trimmed.includes('Tool:')) {
+      if (trimmed.startsWith("[Decision:") && trimmed.includes("Starting")) {
+        send("action", {
+          action: "decision_start",
+          message: trimmed,
+          phase: "decision",
+        });
+      } else if (
+        trimmed.startsWith("[Decision:") &&
+        trimmed.includes("Tool:")
+      ) {
         const toolMatch = trimmed.match(/Tool: (\w+)\(/);
-        send('action', { action: 'tool_call', tool: toolMatch?.[1] || 'unknown', message: trimmed, phase: 'decision' });
-      } else if (trimmed.startsWith('[Decision:') && trimmed.includes('Done in')) {
-        send('action', { action: 'decision_done', message: trimmed, phase: 'decision' });
-      } else if (trimmed.startsWith('[Review:') && trimmed.includes('Reviewing')) {
-        send('action', { action: 'review_start', message: trimmed, phase: 'review' });
-      } else if (trimmed.startsWith('[Review:') && trimmed.includes('Done in')) {
-        send('action', { action: 'review_done', message: trimmed, phase: 'review' });
-      } else if (trimmed.startsWith('[Review]') && (trimmed.includes('APPROVED') || trimmed.includes('REJECTED'))) {
-        send('action', { action: 'review_result', message: trimmed, phase: 'review' });
+        send("action", {
+          action: "tool_call",
+          tool: toolMatch?.[1] || "unknown",
+          message: trimmed,
+          phase: "decision",
+        });
+      } else if (
+        trimmed.startsWith("[Decision:") &&
+        trimmed.includes("Done in")
+      ) {
+        send("action", {
+          action: "decision_done",
+          message: trimmed,
+          phase: "decision",
+        });
+      } else if (
+        trimmed.startsWith("[Review:") &&
+        trimmed.includes("Reviewing")
+      ) {
+        send("action", {
+          action: "review_start",
+          message: trimmed,
+          phase: "review",
+        });
+      } else if (
+        trimmed.startsWith("[Review:") &&
+        trimmed.includes("Done in")
+      ) {
+        send("action", {
+          action: "review_done",
+          message: trimmed,
+          phase: "review",
+        });
+      } else if (
+        trimmed.startsWith("[Review]") &&
+        (trimmed.includes("APPROVED") || trimmed.includes("REJECTED"))
+      ) {
+        send("action", {
+          action: "review_result",
+          message: trimmed,
+          phase: "review",
+        });
       } else if (trimmed.match(/→ (LONG|SHORT|CLOSE|HOLD)/)) {
-        send('trade', { message: trimmed, phase: 'trade' });
+        send("trade", { message: trimmed, phase: "trade" });
       } else if (trimmed.match(/\[2026-/)) {
-        const dayMatch = trimmed.match(/\[([\d-]+)\] Day (\d+)\/(\d+) \| Balance: \$([.\d]+)/);
+        const dayMatch = trimmed.match(
+          /\[([\d-]+)\] Day (\d+)\/(\d+) \| Balance: \$([.\d]+)/,
+        );
         if (dayMatch) {
-          send('day', {
-            date: dayMatch[1], dayNum: parseInt(dayMatch[2]),
-            totalDays: parseInt(dayMatch[3]), balance: parseFloat(dayMatch[4]),
-            phase: 'simulate'
+          send("day", {
+            date: dayMatch[1],
+            dayNum: parseInt(dayMatch[2]),
+            totalDays: parseInt(dayMatch[3]),
+            balance: parseFloat(dayMatch[4]),
+            phase: "simulate",
           });
         }
-      } else if (trimmed.includes('Fetching historical candles')) {
-        send('status', { message: 'Fetching historical candles...', phase: 'candles' });
-      } else if (trimmed.includes('daily candles loaded')) {
-        send('status', { message: trimmed, phase: 'candles' });
-      } else if (trimmed.includes('LIQUIDATED')) {
-        send('trade', { message: trimmed, phase: 'liquidation' });
+      } else if (trimmed.includes("Fetching historical candles")) {
+        send("status", {
+          message: "Fetching historical candles...",
+          phase: "candles",
+        });
+      } else if (trimmed.includes("daily candles loaded")) {
+        send("status", { message: trimmed, phase: "candles" });
+      } else if (trimmed.includes("LIQUIDATED")) {
+        send("trade", { message: trimmed, phase: "liquidation" });
       }
     }
   });
 
-  child.stdout.on('data', (chunk) => {
+  child.stdout.on("data", (chunk) => {
     stdoutBuffer += chunk.toString();
   });
 
-  child.on('close', (code) => {
-    try {
-      const result = JSON.parse(stdoutBuffer);
-      send('complete', { result, exitCode: code });
-    } catch {
-      send('complete', { exitCode: code, error: 'Failed to parse results' });
+  child.on("close", (code) => {
+    if (code !== 0) {
+      const tail = stderrBuffer.trim().split("\n").slice(-15).join("\n");
+      send("error", {
+        message: `Backtest exited with code ${code}`,
+        detail: tail,
+        exitCode: code,
+      });
+      return res.end();
+    }
+    // Engines (DecisionEngine/ReviewEngine) write `[Decision:...]` / `[Review:...]`
+    // lines to stdout, so stdoutBuffer is NOT pure JSON. Extract the final
+    // trailing JSON object (pretty-printed, `{` then newline, `}` at end).
+    const result = extractTrailingJson(stdoutBuffer);
+    if (result) {
+      send("complete", { result, exitCode: code });
+    } else {
+      const tail = stderrBuffer.trim().split("\n").slice(-15).join("\n");
+      send("error", {
+        message: "Failed to parse backtest results",
+        detail: tail || stdoutBuffer.slice(-400),
+        exitCode: code,
+      });
     }
     res.end();
   });
 
-  child.on('error', (err) => {
-    send('error', { message: err.message });
+  child.on("error", (err) => {
+    send("error", { message: err.message });
     res.end();
   });
 
-  req.on('close', () => {
+  req.on("close", () => {
     child.kill();
   });
 });
@@ -490,20 +774,28 @@ app.get('/api/backtests/run', async (req, res) => {
 /**
  * GET /api/backtests - List all backtest results
  */
-app.get('/api/backtests', async (req, res) => {
+app.get("/api/backtests", async (req, res) => {
   try {
-    const backtestDir = path.join(ROOT, 'memory', 'backtests');
+    const backtestDir = path.join(ROOT, "memory", "backtests");
     await fs.mkdir(backtestDir, { recursive: true });
     const files = await fs.readdir(backtestDir);
-    const jsonFiles = files.filter(f => f.endsWith('.json')).sort().reverse();
+    const jsonFiles = files
+      .filter((f) => f.endsWith(".json"))
+      .sort()
+      .reverse();
 
     const results = [];
     for (const file of jsonFiles) {
       try {
-        const content = await fs.readFile(path.join(backtestDir, file), 'utf-8');
+        const content = await fs.readFile(
+          path.join(backtestDir, file),
+          "utf-8",
+        );
         const data = JSON.parse(content);
         results.push({ file, ...data });
-      } catch { /* skip malformed */ }
+      } catch {
+        /* skip malformed */
+      }
     }
     res.json(results);
   } catch (e) {
@@ -514,33 +806,42 @@ app.get('/api/backtests', async (req, res) => {
 /**
  * GET /api/backtests/:file - Get a single backtest result
  */
-app.get('/api/backtests/:file', async (req, res) => {
+app.get("/api/backtests/:file", async (req, res) => {
   try {
-    const filepath = path.join(ROOT, 'memory', 'backtests', req.params.file);
-    const content = await fs.readFile(filepath, 'utf-8');
+    const filepath = path.join(ROOT, "memory", "backtests", req.params.file);
+    const content = await fs.readFile(filepath, "utf-8");
     const data = JSON.parse(content);
 
     // Augment with agent pairs from config
     if (data.config?.agentId) {
       try {
-        const agentConfigPath = path.join(ROOT, 'config', 'agents', `${data.config.agentId}.json`);
-        const agentConfig = JSON.parse(await fs.readFile(agentConfigPath, 'utf-8'));
-        data.agentPairs = (agentConfig.tradingPairs || []).map(p => p.symbol);
-      } catch { /* agent config may not exist */ }
+        const agentConfigPath = path.join(
+          ROOT,
+          "config",
+          "agents",
+          `${data.config.agentId}.json`,
+        );
+        const agentConfig = JSON.parse(
+          await fs.readFile(agentConfigPath, "utf-8"),
+        );
+        data.agentPairs = (agentConfig.tradingPairs || []).map((p) => p.symbol);
+      } catch {
+        /* agent config may not exist */
+      }
     }
 
     res.json(data);
   } catch (e) {
-    res.status(404).json({ error: 'Backtest not found' });
+    res.status(404).json({ error: "Backtest not found" });
   }
 });
 
 // SPA fallback
-app.get('*', async (req, res) => {
+app.get("*", async (req, res) => {
   try {
-    res.sendFile(path.join(distPath, 'index.html'));
+    res.sendFile(path.join(distPath, "index.html"));
   } catch {
-    res.status(404).send('Build the frontend first: npm run build');
+    res.status(404).send("Build the frontend first: npm run build");
   }
 });
 

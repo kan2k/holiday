@@ -5,6 +5,8 @@
   "description": "Go on holiday while your AI trading agent works 24/7. Autonomous trading loop that never sleeps, so you can.",
   "main": "index.js",
   "scripts": {
+    "dev:dashboard": "npm run dev --prefix dashboard",
+    "dev:dashboard:full": "npm run dev:full --prefix dashboard",
     "start": "node index.js",
     "start:agent": "node index.js --agent",
     "create-agent": "node scripts/create-agent.js",

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently \"node server.js\" \"vite\"",
+    "dev:full": "concurrently -n api,ui,research -c cyan,green,magenta \"node server.js\" \"vite\" \"node start-research-daemon.mjs\"",
     "build": "vite build",
     "start": "node server.js",
     "server": "node server.js"
